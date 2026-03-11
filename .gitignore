@@ -1,0 +1,11 @@
+.ruff_cache/
+__pycache__/
+.venv/
+
+*.emb
+*.bin
+
+*.o
+*.a
+
+build/
