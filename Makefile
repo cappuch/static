@@ -1,7 +1,7 @@
 .PHONY: all clean tiktoken embedder
 
 CXX = g++
-CXXFLAGS = -std=c++17 -O2 -Wall
+CXXFLAGS = -std=c++17 -O3 -march=native -ffast-math -Wall
 INCLUDES = -I. -Itiktoken-c
 
 BUILD_DIR = build
@@ -25,7 +25,7 @@ $(TIKTOKEN_LIB):
 $(DIST_DIR)/embedder: $(EMBEDDER_OBJS) $(TIKTOKEN_LIB)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $^ -lpthread -ldl
 
-$(BUILD_DIR)/embedder.o: src/embedder.cpp src/embedder.h | $(BUILD_DIR)
+$(BUILD_DIR)/embedder.o: src/embedder.cpp src/embedder.h src/binary.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ src/embedder.cpp
 
 $(BUILD_DIR)/tokenizer_wrapper.o: src/tokenizer_wrapper.cpp src/tokenizer_wrapper.h tiktoken-c/tiktoken.h | $(BUILD_DIR)
@@ -41,4 +41,4 @@ $(BUILD_DIR)/main.o: src/main.cpp src/embedder.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ src/main.cpp
 
 clean:
-	rm -rf /build
+	rm -rf $(BUILD_DIR)

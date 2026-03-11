@@ -89,7 +89,7 @@ std::vector<std::vector<uint32_t>> BatchTokenizer::encode(const std::vector<std:
     results.reserve(texts.size());
 
     for (const auto& text : texts) {
-        results.push_back(tokenizer_.encode(text));
+        results.push_back(tokenizer_.encode_ordinary(text)); // i forget
     }
 
     return results;

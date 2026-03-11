@@ -24,6 +24,13 @@ public:
         uint32_t max_token_id = 200000
     );
 
+    static uint32_t load_flat_int8(
+        const std::string& filepath,
+        int8_t* embeddings_int8,
+        uint8_t* populated,
+        uint32_t flat_capacity
+    );
+
     static size_t get_file_size(const std::string& filepath);
 };
 

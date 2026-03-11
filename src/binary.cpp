@@ -1,15 +1,20 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "binary.h"
 
 namespace {
 
 size_t get_file_size(const std::string& filepath) {
-    std::ifstream f(filepath, std::ios::binary | std::ios::ate);
-    if (!f.is_open()) return 0;
-    return f.tellg();
+    struct stat st;
+    if (stat(filepath.c_str(), &st) != 0) return 0;
+    return static_cast<size_t>(st.st_size);
 }
 
 }
@@ -73,7 +78,7 @@ void BinaryFormat::save(
     }
 
     f.close();
-    std::cout << "\ndone! File size: " << (get_file_size(filepath) / 1024.0 / 1024.0) << " mb" << std::endl;
+    std::cout << "\ndone! file size: " << (::get_file_size(filepath) / 1024.0 / 1024.0) << " mb" << std::endl;
 }
 
 void BinaryFormat::load(
@@ -89,7 +94,7 @@ void BinaryFormat::load(
     }
     test_file.close();
 
-    size_t file_size = get_file_size(filepath);
+    size_t file_size = ::get_file_size(filepath);
     std::cout << "loading binary embeddings from " << filepath << " ("
               << (file_size / 1024.0 / 1024.0) << " mb)" << std::endl;
 
@@ -148,6 +153,86 @@ void BinaryFormat::load(
     f.close();
     std::cout << "\nloaded " << embeddings_dict.size() << " tokens ("
               << (file_size / 1024.0 / 1024.0) << " MB)" << std::endl;
+}
+
+uint32_t BinaryFormat::load_flat_int8(
+    const std::string& filepath,
+    int8_t* embeddings_int8,
+    uint8_t* populated,
+    uint32_t flat_capacity
+) {
+    size_t file_size = ::get_file_size(filepath);
+    if (file_size == 0) {
+        std::cerr << "binary file not found or empty: " << filepath << std::endl;
+        return 0;
+    }
+
+    std::cout << "loading binary embeddings (int8 flat) from " << filepath << " ("
+              << (file_size / 1024.0 / 1024.0) << " mb)" << std::endl;
+
+    int fd = open(filepath.c_str(), O_RDONLY);
+    if (fd < 0) {
+        std::cerr << "cannot open file: " << filepath << std::endl;
+        return 0;
+    }
+
+    void* mapped = mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+    if (mapped == MAP_FAILED) {
+        std::cerr << "mmap failed for: " << filepath << std::endl;
+        ::close(fd);
+        return 0;
+    }
+
+    madvise(mapped, file_size, MADV_SEQUENTIAL);
+
+    const uint8_t* ptr = static_cast<const uint8_t*>(mapped);
+    const uint8_t* end = ptr + file_size;
+
+    uint32_t n_vocab_read, embedding_dim, flags;
+    std::memcpy(&n_vocab_read, ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+    std::memcpy(&embedding_dim, ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+    std::memcpy(&flags, ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+
+    const size_t record_size = sizeof(uint32_t) + embedding_dim;
+
+    std::vector<int16_t> running(embedding_dim, 0);
+
+    uint32_t loaded = 0;
+    for (uint32_t i = 0; i < n_vocab_read && ptr + record_size <= end; ++i) {
+        uint32_t token_id;
+        std::memcpy(&token_id, ptr, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+
+        const int8_t* delta = reinterpret_cast<const int8_t*>(ptr);
+        ptr += embedding_dim;
+
+        if (token_id < flat_capacity) {
+            int8_t* dst = embeddings_int8 + static_cast<size_t>(token_id) * embedding_dim;
+            for (uint32_t j = 0; j < embedding_dim; ++j) {
+                running[j] += delta[j];
+                int16_t v = running[j];
+                dst[j] = static_cast<int8_t>(v < -128 ? -128 : (v > 127 ? 127 : v));
+            }
+            populated[token_id] = 1;
+        } else {
+            for (uint32_t j = 0; j < embedding_dim; ++j) {
+                running[j] += delta[j];
+            }
+        }
+        ++loaded;
+
+        if ((i + 1) % 10000 == 0) {
+            std::cout << "\rloaded " << (i + 1) << "/" << n_vocab_read << " tokens" << std::flush;
+        }
+    }
+
+    munmap(mapped, file_size);
+    ::close(fd);
+
+    std::cout << "\rloaded " << loaded << " tokens ("
+              << (file_size / 1024.0 / 1024.0) << " MB)" << std::endl;
+
+    return embedding_dim;
 }
 
 size_t BinaryFormat::get_file_size(const std::string& filepath) {
