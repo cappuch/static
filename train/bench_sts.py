@@ -1,4 +1,4 @@
-"""MTEB STS benchmark for the static-openai embedding server.
+"""MTEB STS benchmark for the static embedding server.
 
 Wraps the local /v1/embeddings endpoint as an MTEB-compatible model
 and evaluates on Semantic Textual Similarity (STS) tasks.
@@ -18,9 +18,8 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any, Unpack
 
-import numpy as np
-
 import mteb
+import numpy as np
 from mteb.models import ModelMeta
 
 if TYPE_CHECKING:
@@ -47,9 +46,9 @@ DEFAULT_TASKS = ["STSBenchmark"]
 
 
 class StaticEmbeddingModel:
-    """Wraps the local static-openai HTTP server as an MTEB model."""
+    """Wraps the local static HTTP server as an MTEB model."""
 
-    def __init__(self, url: str, model_name: str = "local/static-openai"):
+    def __init__(self, url: str, model_name: str = "local/static"):
         self.url = url
         self.model_name = model_name
         self._dim: int | None = None
@@ -162,7 +161,7 @@ class StaticEmbeddingModel:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run MTEB STS benchmarks against the static-openai server"
+        description="Run MTEB STS benchmarks against the static server"
     )
     parser.add_argument(
         "--url",

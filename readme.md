@@ -1,8 +1,7 @@
-# static openai embedding models
-using ideas taken from model2vec, i decided to distil openai's embedding models
+# static embedding models
+using ideas taken from model2vec, i decided to distil openai's embedding models... this obviously breaks their licensing terms, but who cares?
 
-this obviously breaks their licensing terms, but who cares?
-
+otherwise, you can *nearly* plug and play with any static model, you just need to convert it to our format.
 
 speed is mindboggling
 ```
