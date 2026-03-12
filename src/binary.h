@@ -28,7 +28,7 @@ public:
     
     static uint32_t load_flat_int8(
         const std::string& filepath,
-        int8_t* embeddings_int8,
+        int16_t* embeddings_int16,
         uint8_t* populated,
         uint32_t flat_capacity
     );

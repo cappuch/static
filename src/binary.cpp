@@ -160,18 +160,18 @@ uint32_t BinaryFormat::read_header_dim(const std::string& filepath) {
     if (!file.is_open()) {
         return 0;
     }
-    
+
     uint32_t n_vocab, embedding_dim, flags;
     file.read(reinterpret_cast<char*>(&n_vocab), sizeof(uint32_t));
     file.read(reinterpret_cast<char*>(&embedding_dim), sizeof(uint32_t));
     file.read(reinterpret_cast<char*>(&flags), sizeof(uint32_t));
-    
+
     return embedding_dim;
 }
 
 uint32_t BinaryFormat::load_flat_int8(
     const std::string& filepath,
-    int8_t* embeddings_int8,
+    int16_t* embeddings_int16,
     uint8_t* populated,
     uint32_t flat_capacity
 ) {
@@ -220,18 +220,16 @@ uint32_t BinaryFormat::load_flat_int8(
         const int8_t* delta = reinterpret_cast<const int8_t*>(ptr);
         ptr += embedding_dim;
 
+        for (uint32_t j = 0; j < embedding_dim; ++j) {
+            running[j] += delta[j];
+        }
+
         if (token_id < flat_capacity) {
-            int8_t* dst = embeddings_int8 + static_cast<size_t>(token_id) * embedding_dim;
+            int16_t* dst = embeddings_int16 + static_cast<size_t>(token_id) * embedding_dim;
             for (uint32_t j = 0; j < embedding_dim; ++j) {
-                running[j] += delta[j];
-                int16_t v = running[j];
-                dst[j] = static_cast<int8_t>(v < -128 ? -128 : (v > 127 ? 127 : v));
+                dst[j] = running[j];
             }
             populated[token_id] = 1;
-        } else {
-            for (uint32_t j = 0; j < embedding_dim; ++j) {
-                running[j] += delta[j];
-            }
         }
         ++loaded;
 

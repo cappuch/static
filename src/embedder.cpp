@@ -21,7 +21,7 @@ Embedder::Embedder(uint32_t n_vocab, const std::string& embeddings_path)
     : n_vocab_(n_vocab)
     , embedding_dim_(DEFAULT_EMBEDDING_DIM)
     , embeddings_path_(embeddings_path)
-    , embeddings_int8_(nullptr)
+    , embeddings_int16_(nullptr)
     , flat_capacity_(0)
     , populated_(nullptr)
     , mmap_addr_(nullptr)
@@ -35,9 +35,9 @@ Embedder::~Embedder() {
         delete tokenizer_;
     }
     tokenizer_ = nullptr;
-    if (embeddings_int8_) {
-        std::free(embeddings_int8_);
-        embeddings_int8_ = nullptr;
+    if (embeddings_int16_) {
+        std::free(embeddings_int16_);
+        embeddings_int16_ = nullptr;
     }
     if (populated_) {
         std::free(populated_);
@@ -48,12 +48,12 @@ Embedder::~Embedder() {
 void Embedder::load_embeddings(const std::string& path) {
     std::string filepath = path.empty() ? embeddings_path_ : path;
     std::cerr << "Warning: .emb format is deprecated, using binary format instead" << std::endl;
-    
+
     std::string binary_path = filepath;
     if (binary_path.find(".emb") != std::string::npos) {
         binary_path = binary_path.replace(binary_path.find(".emb"), 4, ".bin");
     }
-    
+
     load_binary(binary_path);
 }
 
@@ -85,152 +85,112 @@ void Embedder::load_binary(const std::string& path, uint32_t max_token_id) {
     max_token_id_ = max_token_id == 0 ? 200000 : max_token_id;
     flat_capacity_ = max_token_id_ + 1;
 
-    if (embeddings_int8_) {
-        std::free(embeddings_int8_);
-        embeddings_int8_ = nullptr;
+    if (embeddings_int16_) {
+        std::free(embeddings_int16_);
+        embeddings_int16_ = nullptr;
     }
     if (populated_) {
         std::free(populated_);
         populated_ = nullptr;
     }
 
-    size_t flat_bytes = static_cast<size_t>(flat_capacity_) * embedding_dim_;
-    embeddings_int8_ = static_cast<int8_t*>(std::aligned_alloc(64, flat_bytes));
-    if (!embeddings_int8_) {
-        std::cerr << "failed to allocate " << (flat_bytes / 1024.0 / 1024.0) << " MB for int8 embeddings" << std::endl;
+    size_t flat_bytes = static_cast<size_t>(flat_capacity_) * embedding_dim_ * sizeof(int16_t);
+    embeddings_int16_ = static_cast<int16_t*>(std::aligned_alloc(64, flat_bytes));
+    if (!embeddings_int16_) {
+        std::cerr << "failed to allocate " << (flat_bytes / 1024.0 / 1024.0) << " MB for int16 embeddings" << std::endl;
         return;
     }
-    std::memset(embeddings_int8_, 0, flat_bytes);
+    std::memset(embeddings_int16_, 0, flat_bytes);
 
     size_t pop_bytes = flat_capacity_;
     populated_ = static_cast<uint8_t*>(std::aligned_alloc(64, pop_bytes));
     if (!populated_) {
         std::cerr << "failed to allocate populated array" << std::endl;
-        std::free(embeddings_int8_);
-        embeddings_int8_ = nullptr;
+        std::free(embeddings_int16_);
+        embeddings_int16_ = nullptr;
         return;
     }
     std::memset(populated_, 0, pop_bytes);
 
-    uint32_t dim = BinaryFormat::load_flat_int8(filepath, embeddings_int8_, populated_,
+    uint32_t dim = BinaryFormat::load_flat_int8(filepath, embeddings_int16_, populated_,
                                                  flat_capacity_);
     if (dim > 0) {
         embedding_dim_ = dim;
     }
 
-    std::cout << "int8 flat array: " << (flat_bytes / 1024.0 / 1024.0) << " MB" << std::endl;
+    std::cout << "int16 flat array: " << (flat_bytes / 1024.0 / 1024.0) << " MB" << std::endl;
 }
 
-const int8_t* Embedder::lookup(uint32_t token_id) const {
+const int16_t* Embedder::lookup(uint32_t token_id) const {
     if (token_id < flat_capacity_ && populated_[token_id]) {
-        return embeddings_int8_ + static_cast<size_t>(token_id) * embedding_dim_;
+        return embeddings_int16_ + static_cast<size_t>(token_id) * embedding_dim_;
     }
     return nullptr;
 }
 
-void Embedder::accumulate_scaled(int32_t* sum, const int8_t* emb, int32_t freq, uint32_t dim) {
+void Embedder::accumulate_scaled(int32_t* sum, const int16_t* emb, int32_t freq, uint32_t dim) {
 #if defined(HAS_AVX2)
     if (freq == 1) {
         uint32_t j = 0;
-        for (; j + 64 <= dim; j += 64) {
-            __m256i bytes0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(emb + j));
-            __m128i lo0 = _mm256_castsi256_si128(bytes0);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j)),
-                                 _mm256_cvtepi8_epi32(lo0)));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 8),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 8)),
-                                 _mm256_cvtepi8_epi32(_mm_srli_si128(lo0, 8))));
-            __m128i hi0 = _mm256_extracti128_si256(bytes0, 1);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 16),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 16)),
-                                 _mm256_cvtepi8_epi32(hi0)));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 24),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 24)),
-                                 _mm256_cvtepi8_epi32(_mm_srli_si128(hi0, 8))));
-
-            __m256i bytes1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(emb + j + 32));
-            __m128i lo1 = _mm256_castsi256_si128(bytes1);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 32),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 32)),
-                                 _mm256_cvtepi8_epi32(lo1)));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 40),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 40)),
-                                 _mm256_cvtepi8_epi32(_mm_srli_si128(lo1, 8))));
-            __m128i hi1 = _mm256_extracti128_si256(bytes1, 1);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 48),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 48)),
-                                 _mm256_cvtepi8_epi32(hi1)));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 56),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 56)),
-                                 _mm256_cvtepi8_epi32(_mm_srli_si128(hi1, 8))));
-        }
         for (; j + 32 <= dim; j += 32) {
-            __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(emb + j));
-            __m128i lo = _mm256_castsi256_si128(bytes);
+            __m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j));
+            __m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j + 8));
+            __m128i s2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j + 16));
+            __m128i s3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j + 24));
+
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j),
                 _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j)),
-                                 _mm256_cvtepi8_epi32(lo)));
+                                 _mm256_cvtepi16_epi32(s0)));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 8),
                 _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 8)),
-                                 _mm256_cvtepi8_epi32(_mm_srli_si128(lo, 8))));
-            __m128i hi = _mm256_extracti128_si256(bytes, 1);
+                                 _mm256_cvtepi16_epi32(s1)));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 16),
                 _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 16)),
-                                 _mm256_cvtepi8_epi32(hi)));
+                                 _mm256_cvtepi16_epi32(s2)));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 24),
                 _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 24)),
-                                 _mm256_cvtepi8_epi32(_mm_srli_si128(hi, 8))));
+                                 _mm256_cvtepi16_epi32(s3)));
+        }
+        for (; j + 8 <= dim; j += 8) {
+            __m128i s = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j),
+                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j)),
+                                 _mm256_cvtepi16_epi32(s)));
         }
         for (; j < dim; ++j) sum[j] += emb[j];
     } else {
         __m256i vfreq = _mm256_set1_epi32(freq);
         uint32_t j = 0;
-        for (; j + 32 <= dim; j += 32) {
-            __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(emb + j));
-            __m128i lo = _mm256_castsi256_si128(bytes);
-            __m128i hi = _mm256_extracti128_si256(bytes, 1);
+        for (; j + 16 <= dim; j += 16) {
+            __m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j));
+            __m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(emb + j + 8));
 
-            __m256i w0 = _mm256_mullo_epi32(_mm256_cvtepi8_epi32(lo), vfreq);
-            __m256i w1 = _mm256_mullo_epi32(_mm256_cvtepi8_epi32(_mm_srli_si128(lo, 8)), vfreq);
-            __m256i w2 = _mm256_mullo_epi32(_mm256_cvtepi8_epi32(hi), vfreq);
-            __m256i w3 = _mm256_mullo_epi32(_mm256_cvtepi8_epi32(_mm_srli_si128(hi, 8)), vfreq);
+            __m256i w0 = _mm256_mullo_epi32(_mm256_cvtepi16_epi32(s0), vfreq);
+            __m256i w1 = _mm256_mullo_epi32(_mm256_cvtepi16_epi32(s1), vfreq);
 
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j),
                 _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j)), w0));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 8),
                 _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 8)), w1));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 16),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 16)), w2));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(sum + j + 24),
-                _mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sum + j + 24)), w3));
         }
         for (; j < dim; ++j) sum[j] += emb[j] * freq;
     }
 #elif defined(HAS_NEON)
     if (freq == 1) {
         uint32_t j = 0;
-        for (; j + 16 <= dim; j += 16) {
-            int8x16_t v = vld1q_s8(emb + j);
-            int16x8_t lo16 = vmovl_s8(vget_low_s8(v));
-            int16x8_t hi16 = vmovl_s8(vget_high_s8(v));
-            vst1q_s32(sum + j,      vaddq_s32(vld1q_s32(sum + j),      vmovl_s16(vget_low_s16(lo16))));
-            vst1q_s32(sum + j + 4,  vaddq_s32(vld1q_s32(sum + j + 4),  vmovl_s16(vget_high_s16(lo16))));
-            vst1q_s32(sum + j + 8,  vaddq_s32(vld1q_s32(sum + j + 8),  vmovl_s16(vget_low_s16(hi16))));
-            vst1q_s32(sum + j + 12, vaddq_s32(vld1q_s32(sum + j + 12), vmovl_s16(vget_high_s16(hi16))));
+        for (; j + 8 <= dim; j += 8) {
+            int16x8_t v = vld1q_s16(emb + j);
+            vst1q_s32(sum + j,     vaddq_s32(vld1q_s32(sum + j),     vmovl_s16(vget_low_s16(v))));
+            vst1q_s32(sum + j + 4, vaddq_s32(vld1q_s32(sum + j + 4), vmovl_s16(vget_high_s16(v))));
         }
         for (; j < dim; ++j) sum[j] += emb[j];
     } else {
         int32x4_t vfreq = vdupq_n_s32(freq);
         uint32_t j = 0;
-        for (; j + 16 <= dim; j += 16) {
-            int8x16_t v = vld1q_s8(emb + j);
-            int16x8_t lo16 = vmovl_s8(vget_low_s8(v));
-            int16x8_t hi16 = vmovl_s8(vget_high_s8(v));
-            vst1q_s32(sum + j,      vaddq_s32(vld1q_s32(sum + j),      vmulq_s32(vmovl_s16(vget_low_s16(lo16)), vfreq)));
-            vst1q_s32(sum + j + 4,  vaddq_s32(vld1q_s32(sum + j + 4),  vmulq_s32(vmovl_s16(vget_high_s16(lo16)), vfreq)));
-            vst1q_s32(sum + j + 8,  vaddq_s32(vld1q_s32(sum + j + 8),  vmulq_s32(vmovl_s16(vget_low_s16(hi16)), vfreq)));
-            vst1q_s32(sum + j + 12, vaddq_s32(vld1q_s32(sum + j + 12), vmulq_s32(vmovl_s16(vget_high_s16(hi16)), vfreq)));
+        for (; j + 8 <= dim; j += 8) {
+            int16x8_t v = vld1q_s16(emb + j);
+            vst1q_s32(sum + j,     vaddq_s32(vld1q_s32(sum + j),     vmulq_s32(vmovl_s16(vget_low_s16(v)), vfreq)));
+            vst1q_s32(sum + j + 4, vaddq_s32(vld1q_s32(sum + j + 4), vmulq_s32(vmovl_s16(vget_high_s16(v)), vfreq)));
         }
         for (; j < dim; ++j) sum[j] += emb[j] * freq;
     }
@@ -241,7 +201,7 @@ void Embedder::accumulate_scaled(int32_t* sum, const int8_t* emb, int32_t freq, 
 
 void Embedder::convert_to_float(const int32_t* sum, float* result, uint32_t dim, uint32_t total_count) {
     const float scale = 1.0f / (static_cast<float>(total_count) * 127.0f);
-    
+
 #if defined(HAS_AVX2)
     __m256 vscale = _mm256_set1_ps(scale);
     uint32_t j = 0;
@@ -291,9 +251,9 @@ std::vector<float> Embedder::get_embedding_from_tokens(const std::vector<uint32_
     const size_t nu = unique_tokens.size();
 
     constexpr size_t PREFETCH_DIST = 2;
-    constexpr size_t PREFETCH_LINES = 6;
+    constexpr size_t PREFETCH_LINES = 12;
 
-    auto prefetch_embedding = [](const int8_t* emb) {
+    auto prefetch_embedding = [](const int16_t* emb) {
 #if defined(HAS_AVX2)
         for (size_t cl = 0; cl < PREFETCH_LINES; ++cl)
             _mm_prefetch(reinterpret_cast<const char*>(emb + cl * 64), _MM_HINT_T0);
@@ -306,16 +266,16 @@ std::vector<float> Embedder::get_embedding_from_tokens(const std::vector<uint32_
     };
 
     for (size_t p = 0; p < std::min(PREFETCH_DIST, nu); ++p) {
-        const int8_t* emb = lookup(unique_tokens[p].id);
+        const int16_t* emb = lookup(unique_tokens[p].id);
         if (emb) prefetch_embedding(emb);
     }
 
     for (size_t t = 0; t < nu; ++t) {
-        const int8_t* emb = lookup(unique_tokens[t].id);
+        const int16_t* emb = lookup(unique_tokens[t].id);
         if (!emb) continue;
 
         if (t + PREFETCH_DIST < nu) {
-            const int8_t* future = lookup(unique_tokens[t + PREFETCH_DIST].id);
+            const int16_t* future = lookup(unique_tokens[t + PREFETCH_DIST].id);
             if (future) prefetch_embedding(future);
         }
 

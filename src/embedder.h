@@ -38,7 +38,7 @@ public:
     std::vector<std::vector<float>> get_embeddings_from_token_batches(
         const std::vector<std::vector<uint32_t>>& token_batches);
 
-    const int8_t* lookup(uint32_t token_id) const;
+    const int16_t* lookup(uint32_t token_id) const;
 
     uint32_t embedding_dim() const { return embedding_dim_; }
 
@@ -52,7 +52,7 @@ private:
     uint32_t embedding_dim_;
     std::string embeddings_path_;
 
-    int8_t* embeddings_int8_;
+    int16_t* embeddings_int16_;
     uint32_t flat_capacity_;
     uint8_t* populated_;
 
@@ -63,7 +63,7 @@ private:
     Tokenizer* tokenizer_;
     bool owns_tokenizer_;
 
-    void accumulate_scaled(int32_t* sum, const int8_t* emb, int32_t freq, uint32_t dim);
+    void accumulate_scaled(int32_t* sum, const int16_t* emb, int32_t freq, uint32_t dim);
     void convert_to_float(const int32_t* sum, float* result, uint32_t dim, uint32_t total_count);
 };
 

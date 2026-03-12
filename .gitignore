@@ -10,3 +10,5 @@ __pycache__/
 *.a
 
 build/
+
+mteb_results/

@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "mteb>=2.10.11",
     "openai>=2.26.0",
     "tiktoken>=0.12.0",
 ]

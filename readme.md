@@ -7,21 +7,21 @@ this obviously breaks their licensing terms, but who cares?
 speed is mindboggling
 ```
 --------------------------------------------------
-avg tokenizing: 0.0230ms
-avg inference:   0.0052ms
-avg tok/prompt: 6.8
+avg tokenizing: 0.0061ms
+avg inference:   0.0021ms
+avg tok/prompt: 6.4
 
 ==================================================
- throughput:  730.01 req/s
+ throughput: 1472.12 req/s
  ██████████████████████████████
- tok/s:      4964.05
+ tok/s:      9421.60
  ██████████████████████████████
- total time: 10.27s
+ total time: 5.09s
  total reqs: 7500
- total tok:  51000
+ total tok:  48000
  ```
 
-performance is eh, might retrain later.
+performance is eh, might retrain later. (0.41)
 
 ## optimizations
 
@@ -45,7 +45,7 @@ c++ backend:
 13. json responses are built with a pre-sized buffer + snprintf instead of string streams
 14. the accumulator array is stack-allocated to avoid heap allocation per request
 
-that's what makes it so fast (still slower than ds1 tho)
+that's what makes it so fast
 
 
 ## training
