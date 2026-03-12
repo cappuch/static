@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 class Tokenizer {
 public:
@@ -16,21 +17,36 @@ public:
         O200K_HARMONY
     };
 
-    Tokenizer(Model model = Model::O200K_BASE);
+    explicit Tokenizer(Model model = Model::O200K_BASE);
+    explicit Tokenizer(const std::string& tokenizer_json_path);
     ~Tokenizer();
 
     std::vector<uint32_t> encode(const std::string& text);
     std::vector<uint32_t> encode_ordinary(const std::string& text);
     std::string decode(const std::vector<uint32_t>& tokens);
 
+    size_t vocab_size() const { return vocab_size_; }
+
 private:
     void* core_bpe_;
     Model model_;
+    size_t vocab_size_;
+    
+    std::unordered_map<std::string, uint32_t> token_to_id_;
+    std::vector<std::string> id_to_token_;
+    size_t max_token_len_;
+    
+    bool use_huggingface_;
+    std::string tokenizer_json_path_;
+
+    void init_huggingface(const std::string& json_path);
+    std::vector<uint32_t> encode_huggingface(const std::string& text);
 };
 
 class BatchTokenizer {
 public:
-    BatchTokenizer(Tokenizer::Model model = Tokenizer::Model::O200K_BASE);
+    explicit BatchTokenizer(Tokenizer::Model model = Tokenizer::Model::O200K_BASE);
+    explicit BatchTokenizer(const std::string& tokenizer_json_path);
     ~BatchTokenizer();
 
     std::vector<std::vector<uint32_t>> encode(const std::vector<std::string>& texts);

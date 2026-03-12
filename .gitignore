@@ -4,6 +4,7 @@ __pycache__/
 
 *.emb
 *.bin
+*.vocab.json
 
 *.o
 *.a

@@ -24,6 +24,8 @@ public:
         uint32_t max_token_id = 200000
     );
 
+    static uint32_t read_header_dim(const std::string& filepath);
+    
     static uint32_t load_flat_int8(
         const std::string& filepath,
         int8_t* embeddings_int8,

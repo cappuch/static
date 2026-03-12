@@ -62,13 +62,13 @@ void BinaryFormat::save(
             }
         }
 
-        int8_t quantized[1536];
+        std::vector<int8_t> quantized(embedding_dim);
         for (uint32_t j = 0; j < embedding_dim; ++j) {
             quantized[j] = static_cast<int8_t>(std::round(delta_emb[j] * 127));
         }
 
         f.write(reinterpret_cast<const char*>(&token_id), sizeof(uint32_t));
-        f.write(reinterpret_cast<const char*>(quantized), embedding_dim);
+        f.write(reinterpret_cast<const char*>(quantized.data()), embedding_dim);
 
         prev_emb = emb;
 
@@ -123,8 +123,8 @@ void BinaryFormat::load(
             break;
         }
 
-        int8_t quantized[1536];
-        if (!f.read(reinterpret_cast<char*>(quantized), embedding_dim)) {
+        std::vector<int8_t> quantized(embedding_dim);
+        if (!f.read(reinterpret_cast<char*>(quantized.data()), embedding_dim)) {
             break;
         }
 
@@ -153,6 +153,20 @@ void BinaryFormat::load(
     f.close();
     std::cout << "\nloaded " << embeddings_dict.size() << " tokens ("
               << (file_size / 1024.0 / 1024.0) << " MB)" << std::endl;
+}
+
+uint32_t BinaryFormat::read_header_dim(const std::string& filepath) {
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        return 0;
+    }
+    
+    uint32_t n_vocab, embedding_dim, flags;
+    file.read(reinterpret_cast<char*>(&n_vocab), sizeof(uint32_t));
+    file.read(reinterpret_cast<char*>(&embedding_dim), sizeof(uint32_t));
+    file.read(reinterpret_cast<char*>(&flags), sizeof(uint32_t));
+    
+    return embedding_dim;
 }
 
 uint32_t BinaryFormat::load_flat_int8(

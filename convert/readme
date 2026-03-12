@@ -1,0 +1,48 @@
+# Convert
+
+Convert static safetensor embedding models to binary format for the C++ server.
+
+## Install Dependencies
+
+```bash
+cd train
+uv pip install huggingface-hub safetensors tokenizers
+```
+
+## Usage
+
+```bash
+cd train
+source .venv/bin/activate
+python ../convert/convert.py minishlab/potion-base-2M
+```
+
+This will:
+1. Download the model from HuggingFace Hub
+2. Extract the embeddings tensor
+3. Convert to delta-encoded binary format
+4. Save as `minishlab_potion-base-2M.bin`
+
+### Specify output path
+
+```bash
+python convert.py minishlab/potion-base-2M -o my_embeddings.bin
+```
+
+### Use with a private model
+
+```bash
+python convert.py <private_model> --token hf_xxxxx
+```
+
+### List available tensors
+
+```bash
+python convert.py minishlab/potion-base-2M --list
+```
+
+## Run the server
+
+```bash
+./build/dist/embedder minishlab_potion-base-2M.bin
+```
