@@ -5,6 +5,21 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <array>
+#include <memory>
+
+
+struct TrieNode {
+    static constexpr uint32_t INVALID_ID = UINT32_MAX;
+    static constexpr int32_t NO_CHILD = -1;
+
+    uint32_t token_id;                // INVALID_ID if not a terminal
+    std::array<int32_t, 256> children; // index into node pool, NO_CHILD if absent
+
+    TrieNode() : token_id(INVALID_ID) {
+        children.fill(NO_CHILD);
+    }
+};
 
 class Tokenizer {
 public:
@@ -31,16 +46,23 @@ private:
     void* core_bpe_;
     Model model_;
     size_t vocab_size_;
-    
-    std::unordered_map<std::string, uint32_t> token_to_id_;
+
+    // Trie-based vocab: separate tries for first-piece and continuation (##) pieces
+    std::vector<TrieNode> trie_nodes_;      // pool of trie nodes
+    int32_t trie_root_;                      // root for first-piece tokens
+    int32_t trie_cont_root_;                 // root for ## continuation tokens
+    uint32_t unk_id_;
+
     std::vector<std::string> id_to_token_;
-    size_t max_token_len_;
-    
+
     bool use_huggingface_;
     std::string tokenizer_json_path_;
 
     void init_huggingface(const std::string& json_path);
     std::vector<uint32_t> encode_huggingface(const std::string& text);
+
+    int32_t trie_alloc_node();
+    void trie_insert(int32_t root, const char* key, size_t len, uint32_t id);
 };
 
 class BatchTokenizer {

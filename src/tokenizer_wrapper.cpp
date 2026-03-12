@@ -11,7 +11,9 @@ extern "C" {
 }
 
 Tokenizer::Tokenizer(Model model)
-    : core_bpe_(nullptr), model_(model), vocab_size_(0), max_token_len_(0), use_huggingface_(false) {
+    : core_bpe_(nullptr), model_(model), vocab_size_(0),
+      trie_root_(-1), trie_cont_root_(-1), unk_id_(1),
+      use_huggingface_(false) {
     switch (model) {
         case Model::R50K_BASE:
             core_bpe_ = tiktoken_r50k_base();
@@ -36,8 +38,9 @@ Tokenizer::Tokenizer(Model model)
 }
 
 Tokenizer::Tokenizer(const std::string& tokenizer_json_path)
-    : core_bpe_(nullptr), model_(Model::CL100K_BASE), vocab_size_(0), max_token_len_(0), use_huggingface_(true),
-      tokenizer_json_path_(tokenizer_json_path) {
+    : core_bpe_(nullptr), model_(Model::CL100K_BASE), vocab_size_(0),
+      trie_root_(-1), trie_cont_root_(-1), unk_id_(1),
+      use_huggingface_(true), tokenizer_json_path_(tokenizer_json_path) {
 
     std::ifstream file(tokenizer_json_path);
     if (!file.is_open()) {
@@ -47,7 +50,25 @@ Tokenizer::Tokenizer(const std::string& tokenizer_json_path)
 
     init_huggingface(tokenizer_json_path);
 
-    std::cout << "Loaded tokenizer: " << vocab_size_ << " tokens, max_token_len=" << max_token_len_ << std::endl;
+    std::cout << "Loaded tokenizer: " << vocab_size_ << " tokens, trie_nodes=" << trie_nodes_.size() << std::endl;
+}
+
+int32_t Tokenizer::trie_alloc_node() {
+    int32_t idx = static_cast<int32_t>(trie_nodes_.size());
+    trie_nodes_.emplace_back();
+    return idx;
+}
+
+void Tokenizer::trie_insert(int32_t root, const char* key, size_t len, uint32_t id) {
+    int32_t node = root;
+    for (size_t i = 0; i < len; ++i) {
+        uint8_t c = static_cast<uint8_t>(key[i]);
+        if (trie_nodes_[node].children[c] == TrieNode::NO_CHILD) {
+            trie_nodes_[node].children[c] = trie_alloc_node();
+        }
+        node = trie_nodes_[node].children[c];
+    }
+    trie_nodes_[node].token_id = id;
 }
 
 void Tokenizer::init_huggingface(const std::string& json_path) {
@@ -60,7 +81,7 @@ void Tokenizer::init_huggingface(const std::string& json_path) {
     buffer << file.rdbuf();
     std::string json_str = buffer.str();
 
-    max_token_len_ = 0;
+    std::unordered_map<std::string, uint32_t> token_to_id;
 
     auto unescape_json_string = [](const std::string& s) -> std::string {
         std::string result;
@@ -86,7 +107,7 @@ void Tokenizer::init_huggingface(const std::string& json_path) {
                                 uint32_t cp2 = static_cast<uint32_t>(std::stoul(hex2, nullptr, 16));
                                 if (cp2 >= 0xDC00 && cp2 <= 0xDFFF) {
                                     cp = 0x10000 + ((cp - 0xD800) << 10) + (cp2 - 0xDC00);
-                                    i += 6; // skip second \uXXXX
+                                    i += 6;
                                 }
                             }
                             if (cp < 0x80) {
@@ -142,7 +163,7 @@ void Tokenizer::init_huggingface(const std::string& json_path) {
         }
         std::string raw_key = json_str.substr(key_start, pos - key_start);
         std::string token = unescape_json_string(raw_key);
-        if (pos < json_str.size()) ++pos; // skip closing quote
+        if (pos < json_str.size()) ++pos;
 
         while (pos < json_str.size() && (json_str[pos] == ':' || json_str[pos] == ' ' || json_str[pos] == '\t')) {
             ++pos;
@@ -157,23 +178,32 @@ void Tokenizer::init_huggingface(const std::string& json_path) {
 
         try {
             uint32_t id = static_cast<uint32_t>(std::stoul(value_str));
-            token_to_id_[token] = id;
+            token_to_id[token] = id;
 
             if (id >= id_to_token_.size()) {
                 id_to_token_.resize(id + 1);
             }
             id_to_token_[id] = token;
             vocab_size_ = std::max<uint32_t>(vocab_size_, id + 1);
-
-            size_t effective_len = token.size();
-            if (token.size() > 2 && token[0] == '#' && token[1] == '#') {
-                effective_len = token.size() - 2;
-            }
-            if (effective_len > max_token_len_) {
-                max_token_len_ = effective_len;
-            }
         } catch (...) {
             // skip invalid entries
+        }
+    }
+
+    auto unk_it = token_to_id.find("[UNK]");
+    if (unk_it != token_to_id.end()) {
+        unk_id_ = unk_it->second;
+    }
+
+    trie_nodes_.reserve(token_to_id.size() * 8);
+    trie_root_ = trie_alloc_node();
+    trie_cont_root_ = trie_alloc_node();
+
+    for (const auto& [token, id] : token_to_id) {
+        if (token.size() > 2 && token[0] == '#' && token[1] == '#') {
+            trie_insert(trie_cont_root_, token.data() + 2, token.size() - 2, id);
+        } else {
+            trie_insert(trie_root_, token.data(), token.size(), id);
         }
     }
 
@@ -216,98 +246,91 @@ std::vector<uint32_t> Tokenizer::encode_huggingface(const std::string& text) {
     std::vector<uint32_t> result;
     if (text.empty()) return result;
 
-    std::string lower_text;
-    lower_text.reserve(text.size());
-    for (unsigned char c : text) {
-        if (c >= 'A' && c <= 'Z') {
-            lower_text += static_cast<char>(c + 32);
-        } else {
-            lower_text += static_cast<char>(c);
-        }
+    const size_t len = text.size();
+    const char* data = text.data();
+
+    thread_local std::string lower_buf;
+    lower_buf.resize(len);
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = static_cast<unsigned char>(data[i]);
+        lower_buf[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : static_cast<char>(c);
     }
 
-    std::vector<std::string> words;
-    std::string current_word;
-    for (size_t i = 0; i < lower_text.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(lower_text[i]);
-        bool is_space = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+    const char* ldata = lower_buf.data();
+    size_t i = 0;
+
+    while (i < len) {
+        unsigned char c = static_cast<unsigned char>(ldata[i]);
+
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            ++i;
+            continue;
+        }
+
         bool is_punct = (c >= 0x21 && c <= 0x2F) || (c >= 0x3A && c <= 0x40) ||
                         (c >= 0x5B && c <= 0x60) || (c >= 0x7B && c <= 0x7E);
 
-        if (is_space) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-        } else if (is_punct) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-            words.push_back(std::string(1, static_cast<char>(c)));
-        } else {
-            current_word += static_cast<char>(c);
-        }
-    }
-    if (!current_word.empty()) {
-        words.push_back(current_word);
-    }
-
-    uint32_t unk_id = 1; // usually is the unk id
-    auto unk_it = token_to_id_.find("[UNK]");
-    if (unk_it != token_to_id_.end()) {
-        unk_id = unk_it->second;
-    }
-
-    for (const auto& word : words) {
-        size_t start = 0;
-        bool bad = false;
-        std::vector<uint32_t> word_tokens;
-
-        while (start < word.size()) {
-            size_t end = word.size();
-            bool found = false;
-
-            if (start == 0) {
-                if (end - start > max_token_len_) {
-                    end = start + max_token_len_;
-                }
+        if (is_punct) {
+            int32_t node = trie_root_;
+            int32_t child = trie_nodes_[node].children[c];
+            if (child != TrieNode::NO_CHILD && trie_nodes_[child].token_id != TrieNode::INVALID_ID) {
+                result.push_back(trie_nodes_[child].token_id);
             } else {
-                if (end - start > max_token_len_) {
-                    end = start + max_token_len_;
+                result.push_back(unk_id_);
+            }
+            ++i;
+            continue;
+        }
+
+        size_t word_start = i;
+        while (i < len) {
+            unsigned char wc = static_cast<unsigned char>(ldata[i]);
+            if (wc == ' ' || wc == '\t' || wc == '\n' || wc == '\r') break;
+            bool wp = (wc >= 0x21 && wc <= 0x2F) || (wc >= 0x3A && wc <= 0x40) ||
+                      (wc >= 0x5B && wc <= 0x60) || (wc >= 0x7B && wc <= 0x7E);
+            if (wp) break;
+            ++i;
+        }
+        size_t word_end = i;
+
+        size_t pos = word_start;
+        bool is_first = true;
+        bool bad = false;
+        size_t result_start = result.size(); // bookmark to rollback on failure
+
+        while (pos < word_end) {
+            int32_t root = is_first ? trie_root_ : trie_cont_root_;
+            int32_t node = root;
+
+            uint32_t best_id = TrieNode::INVALID_ID;
+            size_t best_end = pos;
+            size_t j = pos;
+
+            while (j < word_end) {
+                uint8_t ch = static_cast<uint8_t>(ldata[j]);
+                int32_t child = trie_nodes_[node].children[ch];
+                if (child == TrieNode::NO_CHILD) break;
+                node = child;
+                ++j;
+                if (trie_nodes_[node].token_id != TrieNode::INVALID_ID) {
+                    best_id = trie_nodes_[node].token_id;
+                    best_end = j;
                 }
             }
 
-            while (end > start) {
-                std::string substr = word.substr(start, end - start);
-                if (start > 0) {
-                    substr = "##" + substr;
-                }
-
-                auto it = token_to_id_.find(substr);
-                if (it != token_to_id_.end()) {
-                    word_tokens.push_back(it->second);
-                    start = end;
-                    found = true;
-                    break;
-                }
-
-                --end;
-                while (end > start && (static_cast<unsigned char>(word[end]) & 0xC0) == 0x80) {
-                    --end;
-                }
-            }
-
-            if (!found) {
+            if (best_id == TrieNode::INVALID_ID) {
                 bad = true;
                 break;
             }
+
+            result.push_back(best_id);
+            pos = best_end;
+            is_first = false;
         }
 
         if (bad) {
-            result.push_back(unk_id);
-        } else {
-            result.insert(result.end(), word_tokens.begin(), word_tokens.end());
+            result.resize(result_start);
+            result.push_back(unk_id_);
         }
     }
 

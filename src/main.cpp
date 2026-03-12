@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <fstream>
 #include "embedder.h"
 #include "server.h"
 
@@ -41,6 +42,20 @@ int main(int argc, char* argv[]) {
 
     Embedder embedder(200000, embeddings_path);
     embedder.load_binary(embeddings_path);
+
+    if (tokenizer_path.empty()) {
+        std::string base = embeddings_path;
+        auto dot = base.rfind('.');
+        if (dot != std::string::npos) {
+            base = base.substr(0, dot);
+        }
+        std::string candidate = base + ".vocab.json";
+        std::ifstream test(candidate);
+        if (test.good()) {
+            tokenizer_path = candidate;
+            std::cout << "auto-detected tokenizer: " << tokenizer_path << std::endl;
+        }
+    }
 
     if (!tokenizer_path.empty()) {
         std::cout << "loading tokenizer from: " << tokenizer_path << std::endl;
